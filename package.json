@@ -1,0 +1,28 @@
+{
+  "name": "ironlung-maze",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "description": "铁肺迷城 IRONLUNG MAZE — a deep-sea investigation horror game built around delayed photographic evidence.",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview --port 4173",
+    "typecheck": "tsc --noEmit",
+    "sim": "tsx tools/balance-sim.ts",
+    "pod": "tsx tools/pod-playthrough.ts",
+    "validate": "tsx tools/validate-content.ts"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@types/node": "^22.9.0",
+    "@types/three": "^0.186.0",
+    "tsx": "^4.19.2",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.21"
+  },
+  "dependencies": {
+    "three": "^0.186.0",
+    "three-mesh-bvh": "0.9.16"
+  }
+}
