@@ -9,6 +9,7 @@ export interface PassiveContact {
 }
 export interface SoundRecord {text:string;frequency:number;at?:number;kind?:PassiveKind;label?:string}
 export interface NavigationConsole {
+ recordDialogue?(text:string):void;
  readonly autoReceive?:boolean;
  readonly radioRecords?:readonly SoundRecord[];
  /** Sources audible on the passive array right now; never carries range. */
@@ -86,6 +87,8 @@ export interface AuthoredSite {
   /** Level spawn points; spawned individuals only reach passive sonar and generated footage. */
   readonly spawner?:MonsterSpawner;
   captureEvidence?():unknown;
+  /** Fixed census IDs visible in this physical exposure, never a post-capture rescan. */
+  containmentSubjects?():string[];
   prepareCapture?():{ok:boolean;message?:string};
   finishCapture?():void;
   commitEvidence?(capture:unknown):void;

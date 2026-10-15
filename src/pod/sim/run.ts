@@ -1,4 +1,7 @@
 import {videoPolicy,videoContextKey,type VideoContext} from '../content/video-policy';
+import {ContainmentMission} from './containment-mission';
+import {seep} from './hull-wear';
+import {formatCoords} from './site-coords';
 /**
  * 一次逃生的全部运行时状态。
  * ============================================================================
@@ -564,9 +567,60 @@ export class PodRun {
   gmLevelSession=false;
   readonly pilot=new PilotMotion();
   authoredSite:AuthoredSite|null=null;
-  createAuthoredSite:((index:number)=>AuthoredSite)|null=null;
+  createAuthoredSite:((index:number,target?:PodRun)=>AuthoredSite)|null=null;
+  createContainmentTransit:((target?:PodRun)=>AuthoredSite)|null=null;
+  containment:ContainmentMission|null=null;
+  containmentPosition:[number,number,number]=[0,0,0];
+  private containmentReserveWarned=false;
+  containmentRadio(text:string):void {
+    this.authoredSite?.navigationConsole?.recordDialogue?.(text);
+    this.pushLog(text,'radio');this.storyCaption=text;this.storyCaptionLeft=16;
+    this.onCue?.('radio.squelch',.4);
+  }
+  get containmentBrief():string {
+    const m=this.containment;if(!m)return '';
+    if(m.phase==='complete')return '万斯：四区影像已归档。调查结束。';
+    if(m.phase==='transit')return `万斯：前往 ${formatCoords(m.route.entry,m.route.datum)}。输入惯导航点后手动驾驶，抵达后按 U 开窗。`;
+    return m.phase==='extraction'?`万斯：撤离点 ${formatCoords(m.route.exit,m.route.datum)} · 抵达后停艇按 B`:`万斯：收容物报告 ${m.submitted.length}/${m.required.length} · U 开关舷窗 · 拍摄后到分析台发送`;
+  }
+  toggleContainmentWindow():boolean {
+    if(!this.containment||!this.powered||this.shot.phase==='exposing')return false;
+    const ok=this.containment.setWindow(!this.containment.windowOpen);
+    this.pushLog(ok?(this.containment.windowOpen?'舷窗遮板已打开。':'舷窗遮板已关闭。'):'盲航中舷窗联锁。抵达万斯坐标后才能开启。','system');
+    if(ok)this.onCue?.('valve.turn',.35);return ok;
+  }
+  get atContainmentBerth():boolean {
+    const m=this.containment,p=this.authoredSite?.position;
+    return !!m&&this.phase==='site'&&!!p&&Math.hypot(p.x-m.route.entry[0],p.y-m.route.entry[1],p.z-m.route.entry[2])<=4;
+  }
+  serviceContainment():boolean {
+    if(!this.atContainmentBerth||Math.abs(this.pilot.speed)>=.1||Math.abs(this.pilot.verticalSpeed)>=.1||Math.abs(this.pilot.yawRate)>=.1||Math.abs(this.pilot.pitchRate)>=.1||armOut(this.arm)||['exposing','developing'].includes(this.shot.phase)){
+      this.pushLog('泊位补给：请返回派遣入口4米内，停艇、收臂并等待显影结束。','system');return false;
+    }
+    this.power=1;this.blackout=false;this.scrubber=1;
+    this.containmentReserveWarned=false;
+    this.vitals.restore({oxygen:this.vitals.vitals.oxygenMax-this.vitals.vitals.oxygen});
+    this.pushLog('派遣泊位：电池、氧气与洗涤器已补充。船体裂缝仍需手动修补。','good');return true;
+  }
+  beginContainment():void {
+    this.authoredSite?.dispose();this.authoredSite=null;this.authoredSiteError='';
+    seep(this);this.flood=0;
+    this.containment=new ContainmentMission();this.legIndex=0;this.startContainmentTransit();
+  }
+  private startContainmentTransit():void {
+    const m=this.containment!;this.phase='transit';this.legIndex=m.index;this.traveled=0;
+    this.containmentPosition=[m.route.entry[0],m.route.entry[1],m.route.entry[2]+m.route.blindDistance];
+    this.heading=0;this.pitch=0;this.pilot.stop();this.throttle=0;this.transitElevation=0;
+    this.threat=null;this.contacts=[];
+    this.openingReceived=true;this.resetShot();this.resetArm();
+    this.ensureAuthoredSite();this.containmentRadio(this.containmentBrief);
+  }
   authoredSiteError='';
   ensureAuthoredSite():void {
+    if(this.containment?.phase==='transit'&&this.phase==='transit'){
+      if(!this.authoredSite&&this.createContainmentTransit)this.authoredSite=this.createContainmentTransit(this);
+      return;
+    }
     if(this.phase!=='site'||!this.createAuthoredSite||this.authoredSiteError)return;
     if(this.authoredSite?.index===this.legIndex)return;
     this.authoredSite?.dispose();this.authoredSite=null;
@@ -597,6 +651,18 @@ export class PodRun {
     const input=this.clock<this.pilotInputUntil?this.pilotInput:{thrust:0,yaw:0,pitch:0,brake:false};
     if(!this.authoredSite&&this.clock<this.pilotImpactUntil){this.pilot.stop();return;}
     const motion=this.pilot.step(dt,input.thrust,input.yaw,input.pitch,input.brake,this.clock<this.heaveUntil?this.heaveInput:0);
+    if(this.containment?.phase==='complete'){this.pilot.stop();return;}
+    if(this.containment&&this.phase==='transit'){
+      this.heading=(this.heading+motion.yaw+360)%360;this.pitch=clamp(this.pitch+motion.pitch,-65,65);
+      const a=this.heading*Math.PI/180,step=motion.distance;
+      this.containmentPosition[0]+=Math.sin(a)*step;this.containmentPosition[2]-=Math.cos(a)*step;
+      this.containmentPosition[1]+=motion.vertical;
+      const distance=Math.hypot(...this.containmentPosition.map((n,i)=>n-this.containment!.route.entry[i]));
+      this.traveled=Math.max(0,this.containment.route.blindDistance-distance);
+      this.power=clamp01(this.power-Math.abs(step)*.00005);
+      if(distance<=4){this.containment.advanceTransit(this.containment.route.blindDistance);this.arrive();}
+      return;
+    }
     if(Math.abs(motion.vertical)>.00001){
       if(this.phase==='site'){
         if(!this.authoredSite?.moveVertical?.(motion.vertical)){this.pilot.verticalSpeed=0;if(this.authoredSite)this.movementWarnUntil=this.clock+.7;}
@@ -959,6 +1025,7 @@ export class PodRun {
   // ==========================================================================
 
   get leg(): Leg {
+    if(this.containment)return {...legAt(this.legIndex),siteName:this.containment.route.name,length:this.containment.route.blindDistance,depth:this.containment.route.datum,safeHeading:0};
     return legAt(this.legIndex);
   }
 
@@ -1001,6 +1068,7 @@ export class PodRun {
   }
 
   get canDepart(): boolean {
+    if(this.containment){const p=this.authoredSite?.position;return !!p&&this.powered&&this.containment.canExit([p.x,p.y,p.z])&&Math.abs(this.pilot.speed)<.1&&Math.abs(this.pilot.verticalSpeed)<.1&&Math.abs(this.pilot.yawRate)<.1&&Math.abs(this.pilot.pitchRate)<.1&&!armOut(this.arm)&&!this.driveBlock;}
     if (this.phase !== 'site' || !this.powered) return false;
     if(this.authoredSite) return this.authoredSite.complete;
     const v = this.volume;
@@ -1013,6 +1081,7 @@ export class PodRun {
 
   /** 出发键上的短提示。万斯的完整催促走无线电，不写在按钮上 */
   get departHint(): string {
+    if(this.containment)return this.containmentBrief;
     if (this.canDepart) return this.legIndex >= ACT_COUNT - 1 ? '进入电梯' : '驶向下一段';
     if(this.authoredSite) return this.legIndex===1?'驶入下行井D，带配重下潜':'未到出口';
     if (!this.volumeKnown) return '先分析第一卷';
@@ -1124,6 +1193,7 @@ export class PodRun {
   }
 
   get depth(): number {
+    if(this.containment)return this.containment.route.datum-(this.phase==='transit'?this.containmentPosition[1]:this.authoredSite?.elevation??0);
     const l = this.leg;
     const prev = this.legIndex > 0 ? legAt(this.legIndex - 1).depth : 900;
     const along = lerp(prev, l.depth, clamp01(this.traveled / l.length));
@@ -1592,15 +1662,20 @@ export class PodRun {
 
   /** 每帧都跑。动画、噪音衰减、警报倒计时、幻听 */
   frame(dt: number): void {
+    if(this.containment?.phase==='complete'){this.clock+=dt;return;}
     this.ensureAuthoredSite();
     if (this.outcome.kind !== 'alive') return;
     this.clock += dt;
+    if(this.containment&&this.phase==='site'&&this.power<.35&&!this.containmentReserveWarned){
+      this.containmentReserveWarned=true;this.containmentRadio('万斯：电池余量不足35%。留意现有补给设施，已提交的影像会保留。');
+    }
 
     this.camX = damp(this.camX, this.camTargetX, 7.5, dt);
     this.zoom = damp(this.zoom, this.at ? 1 : 0, 9, dt);
 
     // 噪音总是往底噪掉。底噪取决于你有没有在动
     if(this.phase==='site'){this.authoredSite?.tick?.(dt);this.warmStoryVideo(dt);}
+    else if(this.containment?.phase==='transit')this.authoredSite?.tick?.(dt);
     this.checkSurvival();
     if(this.outcome.kind!=='alive')return;
     if(!this.powered || !this.activeSonarEnabled)this.stopSonarPulses();
@@ -1620,8 +1695,7 @@ export class PodRun {
     this.tickArm(dt);
     // 格子是会空出来的（用掉、扔掉、被吃掉），台面上排队的东西要跟着进去
     if (this.bench.length) this.drainBench();
-    this.tickVoices(dt);
-    this.tickHookIdle(dt);
+    if(!this.containment){this.tickVoices(dt);this.tickHookIdle(dt);}
     this.tickPilot(dt);
     if(this.mode!=='alert') this.storyCaptionLeft=Math.max(0,this.storyCaptionLeft-dt);
     this.syncCorruption();
@@ -1834,6 +1908,9 @@ export class PodRun {
    * 这就是雷达的全部用处：它不会告诉你该往哪走，它只告诉你哪里走不通。
    */
   private buildContacts(power: 0 | 1 | 2): SonarContact[] {
+    // The opt-in campaign uses authored navigation data, never the legacy
+    // procedural corridor's invented walls. Existing sonar hardware is unchanged.
+    if(this.containment)return [];
     const out: SonarContact[] = [];
     const reach = [0.42, 0.78, 1][power];
     const fidelity = [0.45, 0.85, 1][power];
@@ -2024,6 +2101,7 @@ export class PodRun {
   driveInputBlocked = false;
 
   get driveBlock(): string | null {
+    if(this.containment?.phase==='complete')return '调查已完成';
     if(this.phase==='site'&&this.createAuthoredSite&&!this.authoredSite)return this.authoredSiteError||'设施场景载入中';
     if (this.outcome.kind !== 'alive') return '航行已结束';
     if (this.driveInputBlocked) return '关闭面板并返回游戏';
@@ -2338,6 +2416,7 @@ export class PodRun {
 
   /** 推进一脉冲。这是唯一能让舱体前进的动作 */
   thrust(): void {
+    if(this.containment&&this.phase==='transit'){if(!this.driveBlock)this.holdPilot(this.throttle?1:0,0,0);return;}
     if (this.driveBlock) { this.pushLog(this.driveBlock, 'system'); return; }
     const spec = THROTTLE[this.throttle];
     if (this.phase === 'site') {
@@ -2400,6 +2479,12 @@ export class PodRun {
   }
 
   private arrive(): void {
+    if(this.containment){
+      if(!this.containment.arrive())return;
+      this.authoredSite?.dispose();this.authoredSite=null;
+      this.phase='site';this.traveled=this.leg.length;this.pilot.stop();this.throttle=0;this.navDriveEngaged=false;
+      this.ensureAuthoredSite();this.containmentRadio(`万斯：坐标已确认，按 U 打开舷窗。本区登记 ${this.containment.required.length} 个收容个体，拍摄后用分析台原有发送按钮交给我。`);return;
+    }
     this.navDriveEngaged=false;
     this.phase = 'site';
     this.traveled = this.leg.length;
@@ -2434,6 +2519,15 @@ export class PodRun {
 
   /** 离站，进入下一段航渡。下一关的内部要到站再拍、再分析才会进场。 */
   depart(): void {
+    if(this.containment){
+      if(!this.canDepart){this.pushLog(this.containmentBrief+' · 撤离要求停艇、收臂并完成影像提交。','system');return;}
+      if(this.onBeforeDepart&&!this.onBeforeDepart())return;
+      const p=this.authoredSite!.position!;
+      if(!this.containment.exit([p.x,p.y,p.z]))return;
+      this.authoredSite?.dispose();this.authoredSite=null;
+      if(this.containment.phase==='complete'){this.phase='transit';this.pilot.stop();this.storyCaption=this.containmentBrief;this.storyCaptionLeft=3600;this.pushLog(this.containmentBrief,'good');return;}
+      this.startContainmentTransit();return;
+    }
     if (this.driveBlock) { this.pushLog(this.driveBlock, 'system'); return; }
     if (this.phase !== 'site') return;
     // 带着一条伸出去的臂起步 = 把它挂在第一根横梁上撇断
@@ -2676,6 +2770,7 @@ export class PodRun {
    *   reshoot   —— 同一张几何再看一次，外面可能已经变了
    */
   beginShoot(): void {
+    if(this.containment&&!this.containment.windowOpen){this.pushLog('遮板关闭，无法摄影。抵达坐标后按 U 开窗。','system');return;}
     const s = this.shot;
     if (armOut(this.arm)) {
       this.pushLog('先收回机械臂。作业时需要保持实时监视回路。', 'system');
@@ -2711,6 +2806,11 @@ export class PodRun {
     try {const frame=this.captureSensorFrame?.();if(frame)s.sensorFrames.push(frame);}catch{/* A missing sensor frame is not replaced with the API PNG. */}
     s.sensorSampleLeft=.5;
     s.siteEvidence=this.authoredSite?.captureEvidence ? structuredClone(this.authoredSite.captureEvidence()) : undefined;
+    if(this.containment&&s.siteEvidence&&typeof s.siteEvidence==='object'){
+      const e=s.siteEvidence as {containment?:unknown};
+      const ids=this.authoredSite?.containmentSubjects?.()??(e.containment as {ids?:string[]}|undefined)?.ids??[];
+      e.containment={...this.containment.captureStamp(),ids:[...ids],seed:this.seed};
+    }
     s.pendingResult=undefined;
     // Restored saves keep tapes but not the shot counter; a reused id would settle the old tape instead.
     s.token=Math.max(s.token,...this.tapes.map(t=>Number(t.id.slice(5))||0))+1;
@@ -4492,6 +4592,7 @@ export class PodRun {
   // ==========================================================================
 
   private tickThreat(dt: number): void {
+    if(this.containment)return; // authored creatures own risk; no legacy random transit attacks.
     if (this.huntActIndex !== this.legIndex) {
       this.huntActIndex = this.legIndex;
       this.suspicion = 0;

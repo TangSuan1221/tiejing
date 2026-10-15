@@ -41,7 +41,7 @@ export class HarborSite implements AuthoredSite {
  noiseBurst(amount:number){if(amount>=.1)this.audibleBurstLeft=Math.max(this.audibleBurstLeft,.6);}
  constructor(readonly run:PodRun){
   this.base=new PodExpedition(run,0);this.world=this.base.world;this.position=this.base.position;
-  this.position.set(11,0,10);run.heading=180;run.pitch=0;run.camPan=run.camTilt=0;seep(run);
+  this.position.set(11,0,10);run.heading=180;run.pitch=0;run.camPan=run.camTilt=0;seep(run);run.flood=0;
   this.visual=createHarborRescueWorld(this.world,this.materials);this.world.colliders.push(...this.visual.solids,this.visual.gate.bounds);this.world.decorColliders.push(...this.visual.decor);
   this.world.walkable.push(new T.Box3(new T.Vector3(72,-1,1.6),new T.Vector3(82.2,5.5,26)));
   const self=this;

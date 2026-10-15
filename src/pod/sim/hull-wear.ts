@@ -3,7 +3,7 @@ export const HULL_WEAR=Object.freeze({
  /** Cabin seams a blow can split, as [side, fore]: side −1 port / +1 starboard, fore = ahead of the cabin midline. */
  seams:[[-1,true],[1,true],[-1,true],[1,true],[1,false],[-1,false]] as readonly (readonly [number,boolean])[],
  /** Seep through one split seam, in flood fraction per breath. Nothing leaks until something hits the hull. */
- seamLeak:.004,
+ seamLeak:.0055,
  /** Seconds of uninterrupted work, facing the seam, to clamp and seal it. */
  patchSeconds:2.6,
  /** Noise of hammering a clamp onto the hull from inside. */

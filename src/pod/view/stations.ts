@@ -9,7 +9,7 @@ import { drawSonarDesk, sonarAction } from './sonar-desk';
  */
 
 import { clamp01 } from '@/core/util';
-import { dropoutActive } from './power-dropout';
+import { dropoutVisual } from './power-dropout';
 import { PALETTE, rgba } from '@/render/palette';
 import { SonarScope } from '@/render/sonar';
 import {drawSonarSweep} from './sonar-sweep';
@@ -741,34 +741,124 @@ function drawHeadingTape(
  * Stress fractures in the porthole glass itself, so they stay over live view and replay alike but never
  * enter the sensor's film. They grow from the rim inward as integrity falls; repairs that restore hull clear them.
  */
-function drawGlassStress(ctx:CanvasRenderingContext2D,hull:number):void {
+const glassCrackBirth=Array<number>(10).fill(Number.NEGATIVE_INFINITY);
+const glassCrackGrowth=Array<number>(10).fill(0);
+let glassLastTime=Number.NEGATIVE_INFINITY;
+function drawGlassStress(ctx:CanvasRenderingContext2D,hull:number,time:number):void {
+  if(time<glassLastTime){glassCrackBirth.fill(Number.NEGATIVE_INFINITY);glassCrackGrowth.fill(0);}
+  glassLastTime=time;
   const damage=clamp01((.78-hull)/.66);
-  if(damage<=0)return;
+  if(damage<=0){glassCrackGrowth.fill(0);return;}
   let seed=917;
   const rnd=()=>{seed=(seed*16807)%2147483647;return seed/2147483647;};
-  const cracks=Math.ceil(damage*7);
   ctx.save();ctx.lineCap='round';ctx.lineJoin='round';
-  for(let i=0;i<7;i++){
-    const angle=rnd()*Math.PI*2,reach=(.22+rnd()*.22)*(.45+damage*.55),bend=rnd()-.5,branch=rnd();
-    if(i>=cracks)continue;
-    const sx=512+Math.cos(angle)*470,sy=360+Math.sin(angle)*330;
-    const pts:[number,number][]=[[sx,sy]];
-    for(let k=1;k<=6;k++){
-      const t=k/6*reach,a=angle+Math.PI+bend*.5*Math.sin(k*1.7)+(rnd()-.5)*.35;
-      pts.push([sx+Math.cos(a)*t*900,sy+Math.sin(a)*t*640]);
+  ctx.beginPath();ctx.ellipse(512,350,487,343,0,0,Math.PI*2);ctx.clip();
+
+  // Compression whitening lives inside the rim instead of reading as a line decal.
+  const edge=ctx.createRadialGradient(512,350,245,512,350,505);
+  edge.addColorStop(.72,'rgba(154,184,185,0)');
+  edge.addColorStop(.91,`rgba(159,190,190,${damage*.025})`);
+  edge.addColorStop(1,`rgba(23,43,45,${damage*.2})`);
+  ctx.fillStyle=edge;ctx.fillRect(0,0,1024,720);
+
+  const crackTotal=10;
+  for(let i=0;i<crackTotal;i++){
+    const angle=rnd()*Math.PI*2;
+    // Each crack spends a damage interval growing instead of popping on like an unlocked UI icon.
+    const activation=clamp01((damage*crackTotal-i-.15)/.7);
+    if(activation>0&&glassCrackGrowth[i]===0)glassCrackBirth[i]=time;
+    if(activation===0)glassCrackBirth[i]=Number.NEGATIVE_INFINITY;
+    glassCrackGrowth[i]=activation;
+    const growthFlash=clamp01(1-(time-glassCrackBirth[i]!)/.4);
+    const bend=rnd()-.5,branch=rnd(),reach=(.18+rnd()*.25)*(.36+damage*.78)*activation;
+    const sx=512+Math.cos(angle)*481,sy=350+Math.sin(angle)*337;
+    const points:[number,number][]=[[sx,sy]];
+    for(let k=1;k<=8;k++){
+      const t=k/8*reach;
+      const jitter=(rnd()-.5)*(.16+damage*.14);
+      const a=angle+Math.PI+bend*.42*Math.sin(k*1.43)+jitter;
+      points.push([sx+Math.cos(a)*t*900,sy+Math.sin(a)*t*640]);
     }
-    for(const [colour,width] of [['rgba(0,0,0,.5)',2.4],['rgba(214,232,236,.42)',1]] as const){
-      ctx.strokeStyle=colour;ctx.lineWidth=width;ctx.beginPath();ctx.moveTo(pts[0]![0],pts[0]![1]);
-      for(const [x,y] of pts.slice(1))ctx.lineTo(x,y);
-      if(damage>.45&&branch>.35){const [bx,by]=pts[3]!;ctx.moveTo(bx,by);ctx.lineTo(bx+(rnd()-.5)*90*damage,by+(rnd()-.5)*70*damage);}
-      ctx.stroke();
+    if(activation<=0)continue;
+
+    // Dark refraction channel, pale lower lip and a fine highlight create glass depth.
+    for(const [colour,width,dx,dy] of [
+      [`rgba(1,10,13,${.28+.34*damage})`,3.5,0,0],
+      [`rgba(93,126,130,${.18+.22*damage})`,1.8,-.7,.8],
+      [`rgba(220,238,239,${.25+.32*damage+growthFlash*.2})`,.72,.55,-.55],
+    ] as const){
+      ctx.strokeStyle=colour;
+      for(let segment=1;segment<points.length;segment++){
+        const start=points[segment-1]!,end=points[segment]!,t=segment/(points.length-1);
+        ctx.lineWidth=Math.max(.25,width*activation*(1-t*.7));
+        ctx.beginPath();ctx.moveTo(start[0]+dx,start[1]+dy);ctx.lineTo(end[0]+dx,end[1]+dy);ctx.stroke();
+      }
+    }
+
+    if(damage>.3&&branch>.28){
+      const branchCount=damage>.7&&branch>.62?2:1;
+      for(let b=0;b<branchCount;b++){
+        const origin=points[3+b*2]!,length=(34+rnd()*76)*damage*activation;
+        const a=angle+Math.PI+(b?-.78:.72)+(rnd()-.5)*.34;
+        const branchPoints:[number,number][]=[origin];
+        for(let segment=1;segment<=3;segment++){
+          const t=segment/3,curve=(segment===2?(rnd()-.5)*.28:0);
+          branchPoints.push([origin[0]+Math.cos(a+curve)*length*t,origin[1]+Math.sin(a+curve)*length*t]);
+        }
+        for(const [colour,width,dx,dy] of [
+          [`rgba(4,15,17,${.26*activation})`,1.9,0,0],
+          [`rgba(207,229,231,${.31*activation})`,.55,.5,-.5],
+        ] as const){
+          ctx.strokeStyle=colour;
+          for(let segment=1;segment<branchPoints.length;segment++){
+            const start=branchPoints[segment-1]!,end=branchPoints[segment]!,t=segment/3;
+            ctx.lineWidth=Math.max(.25,width*(1-t*.62));ctx.beginPath();
+            ctx.moveTo(start[0]+dx,start[1]+dy);ctx.lineTo(end[0]+dx,end[1]+dy);ctx.stroke();
+          }
+        }
+        if(damage>.68){
+          const end=branchPoints[3]!;
+          for(let barb=0;barb<3;barb++){
+            const barbAngle=a+(barb-1)*.55+(rnd()-.5)*.18,barbLength=4+rnd()*4;
+            ctx.strokeStyle=`rgba(211,231,232,${.22*activation})`;ctx.lineWidth=.45;
+            ctx.beginPath();ctx.moveTo(end[0],end[1]);ctx.lineTo(end[0]+Math.cos(barbAngle)*barbLength,end[1]+Math.sin(barbAngle)*barbLength);ctx.stroke();
+          }
+        }
+      }
+    }
+
+    // Small pressure crazing remains concentrated at each loaded rim origin.
+    if(damage>.62){
+      const rays=5+Math.floor(damage*3);
+      for(let ray=0;ray<rays;ray++){
+        const a=angle+Math.PI+(ray-(rays-1)/2)*.13+(rnd()-.5)*.13;
+        const length=(15+rnd()*32)*damage;
+        ctx.strokeStyle=`rgba(188,215,217,${.12+.14*damage})`;ctx.lineWidth=.5;
+        ctx.beginPath();ctx.moveTo(sx,sy);ctx.lineTo(sx+Math.cos(a)*length,sy+Math.sin(a)*length);ctx.stroke();
+      }
+      for(let chip=0;chip<3;chip++){
+        const chipAngle=angle+Math.PI+(rnd()-.5)*.24,chipDistance=2+rnd()*7;
+        ctx.fillStyle=`rgba(218,235,234,${.2+.22*damage})`;ctx.beginPath();
+        ctx.ellipse(sx+Math.cos(chipAngle)*chipDistance,sy+Math.sin(chipAngle)*chipDistance,1+rnd()*1.4,.55+rnd()*.8,chipAngle,0,Math.PI*2);ctx.fill();
+      }
     }
   }
+
   if(damage>.5){
-    // Condensation creeping up from the lower rim once the hull is sweating.
-    const fog=ctx.createLinearGradient(0,720,0,720-260*damage);
-    fog.addColorStop(0,`rgba(150,170,172,${.16*damage})`);fog.addColorStop(1,'rgba(150,170,172,0)');
-    ctx.fillStyle=fog;ctx.fillRect(0,0,1024,720);
+    // Mottled condensation creeps upward from the sweating lower seal at critical hull states.
+    const fogStrength=clamp01((damage-.5)*2);
+    const fog=ctx.createLinearGradient(0,720,0,390);
+    fog.addColorStop(0,`rgba(126,157,157,${.12+.16*fogStrength})`);
+    fog.addColorStop(.42,`rgba(101,136,137,${.065*fogStrength})`);
+    fog.addColorStop(1,'rgba(115,148,149,0)');
+    ctx.fillStyle=fog;ctx.fillRect(0,350,1024,370);
+    for(let i=0;i<7;i++){
+      const x=80+rnd()*864,y=570+rnd()*145,r=35+rnd()*100;
+      const bloom=ctx.createRadialGradient(x,y,0,x,y,r);
+      bloom.addColorStop(0,`rgba(174,196,193,${.035*fogStrength})`);
+      bloom.addColorStop(1,'rgba(92,125,127,0)');
+      ctx.fillStyle=bloom;ctx.fillRect(x-r,y-r,r*2,r*2);
+    }
   }
   ctx.restore();
 }
@@ -781,8 +871,30 @@ export function drawObservationWindow(ctx:CanvasRenderingContext2D,run:PodRun,hi
   const shade=ctx.createRadialGradient(512,300,170,512,330,610);
   shade.addColorStop(0,'rgba(0,8,11,0)');shade.addColorStop(1,'rgba(0,5,8,.85)');
   ctx.fillStyle=shade;ctx.fillRect(0,0,1024,720);ctx.restore();
-  if(dropoutActive()){ctx.fillStyle='rgba(0,0,0,.94)';ctx.fillRect(0,0,1024,720);}
-  drawGlassStress(ctx,run.hull);
+  const dropout=dropoutVisual();
+  if(dropout.phase!=='idle'){
+    // Keep the abyss silhouette readable: cathode afterglow and emergency-red
+    // spill replace the old 94% black slab. Instrument marks are drawn below
+    // after this wash and therefore retain their independent microglow floor.
+    ctx.save();
+    const shade=(1-dropout.instruments)*.57;
+    ctx.fillStyle=`rgba(2,5,7,${shade.toFixed(3)})`;
+    ctx.fillRect(0,0,1024,720);
+    if(dropout.phase==='afterglow'){
+      ctx.globalCompositeOperation='screen';
+      ctx.fillStyle=`rgba(116,79,42,${((1-dropout.warm)*.11).toFixed(3)})`;
+      ctx.fillRect(0,0,1024,720);
+    }
+    if(dropout.emergency>0){
+      ctx.globalCompositeOperation='screen';
+      const red=ctx.createRadialGradient(760,610,40,620,420,720);
+      red.addColorStop(0,`rgba(126,18,7,${(dropout.emergency*.24).toFixed(3)})`);
+      red.addColorStop(1,`rgba(45,3,2,${(dropout.emergency*.07).toFixed(3)})`);
+      ctx.fillStyle=red;ctx.fillRect(0,0,1024,720);
+    }
+    ctx.restore();
+  }
+  drawGlassStress(ctx,run.hull,view.time);
   if(!run.shot.viewing)run.authoredSite?.drawWindowLocks?.(ctx,1024,720);
   else run.authoredSite?.resetWindowFocus?.();
   drawPortholeReadouts(ctx,1024,720,run);

@@ -4,7 +4,7 @@ import {LIVING_EXIT_Y,LIVING_ITEMS,LIVING_LIGHTS,LIVING_SPACES,LIVING_SPAWN,LIVI
 export type LivingStage='explore'|'complete';
 export type LivingEvidenceKind='creature'|'probeCorpse'|'code'|'guide'|'delroy'|'gateOpen'|'valveLabel'|'none';
 export interface LivingEvidence {version:1;id:string;epoch:number;kinds:LivingEvidenceKind[];creatures:CreatureType[];lensBlocked:boolean;lamp:boolean;valid:boolean;diagnostic?:string}
-export interface LivingInput {pod:Vec3;heading:number;lamp:boolean;pulse:boolean;speed:number}
+export interface LivingInput {pod:Vec3;heading:number;lamp:boolean;pulse:boolean;speed:number;containment?:boolean}
 export interface LivingResult {events:string[];damage:number;cues:string[];noise?:{position:Vec3;loudness:number}}
 export type ValveKey='heat'|'feed'|'cool';
 /** `rejected`: targets in view whose framing would not be legible on film (too small, cropped, oblique), with the player-facing reason. */
@@ -73,7 +73,7 @@ export class LivingDeck {
    this.heatClosedFor=s.valves.heat&&!s.valves.feed?this.heatClosedFor+d:0;
    if(this.heatClosedFor>=60&&s.extraLumens===0){s.extraLumens=1;out.events.push('被动声纳：中庭方向多了一个缓慢移动的声源。');}
   }
-  if(s.ballast&&s.space==='D'&&input.pod[1]<LIVING_EXIT_Y&&!s.complete){s.complete=true;out.events.push('配重拖着艇身沉入下行井。-1层的灯光留在头顶。');}
+  if(!input.containment&&s.ballast&&s.space==='D'&&input.pod[1]<LIVING_EXIT_Y&&!s.complete){s.complete=true;out.events.push('配重拖着艇身沉入下行井。-1层的灯光留在头顶。');}
   this.sync();return out;
  }
  interact(itemId:string,_ctx:{lamp:boolean;powered:boolean;armStowed:boolean;pulse:boolean}):LivingResult{

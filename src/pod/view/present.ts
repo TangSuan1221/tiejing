@@ -1,5 +1,9 @@
 import { HarborSite } from './deepsea/harbor-site';
 import { LivingDeckSite } from './deepsea/living-deck-site';
+import {ContainmentSector} from './deepsea/containment-sector';
+import {createContainmentTransit} from './deepsea/containment-transit';
+import {ContainmentAudio} from './containment-audio';
+import {wrapContainmentSite} from './deepsea/containment-adapter';
 /**
  * 逃生舱表现层。
  * ============================================================================
@@ -31,6 +35,7 @@ import { PodExpedition } from './deepsea/pod-expedition';
 import { SONAR_RANGE } from '../sim/navigation-sonar';
 import { triggerDropout } from './power-dropout';
 import { patchProgress, sayHull } from './seam-patch';
+import { cabinLensFog, cabinLensWet, drawCabinLensWater } from './cabin-lens-water';
 
 /**
  * 现在最该去的工位。
@@ -88,6 +93,10 @@ export class PodView {
   private brownoutLeft = 20;
   private lastSeams = -1;
   private seamTold = false;
+  private jetLeft = 0;
+  private dripLeft = 0;
+  private lastFloodBand = -1;
+  private lensWet = 0;
   private zoomVisual = 0;
   private readonly consolePrompt=document.createElement('button');
   private sceneOffset = { x: 0, y: 0 };
@@ -108,7 +117,8 @@ export class PodView {
     if (!s || !h) throw new Error('[pod] 无法创建 2D 上下文');
     this.sctx = s;
     this.hctx = h;
-    run.createAuthoredSite=index=>index===0?new HarborSite(run):index===1?new LivingDeckSite(run):new PodExpedition(run,index);
+    run.createContainmentTransit=(target=run)=>createContainmentTransit(target);
+    run.createAuthoredSite=(index,target=run)=>wrapContainmentSite(target,index===0?new HarborSite(target):index===1?new LivingDeckSite(target):target.containment?new ContainmentSector(target,index as 2|3):new PodExpedition(target,index));
     run.captureSensorFrame = () => {
       const size=run.authoredSite?.presentation?.sensorFrame,fw=size?.width??512,fh=size?.height??360;
       const frame=document.createElement('canvas');frame.width=fw;frame.height=fh;
@@ -248,6 +258,27 @@ export class PodView {
       this.seamTold = true;
     }
     this.lastSeams = run.seams.length;
+
+    this.jetLeft -= dt; this.dripLeft -= dt;
+    if (alive && run.seams.length > 0) {
+      const pan = clamp(this.cabin.seamPan() * 0.85, -0.9, 0.9);
+      if (this.jetLeft <= 0) {
+        this.audio.cue('water.pressure-jet', { gain: 0.28 + Math.min(0.45, run.seams.length * 0.12), pan });
+        this.jetLeft = 1.55 + Math.random() * 0.4;
+      }
+      if (this.dripLeft <= 0) {
+        this.audio.cue(run.flood > 0.2 ? 'water.splash' : 'water.drip', { gain: 0.18 + run.flood * 0.35, pan });
+        this.dripLeft = 0.7 + Math.random() * 1.1;
+      }
+    }
+    const band = run.flood < 0.12 ? 0 : run.flood < 0.28 ? 1 : run.flood < 0.48 ? 2 : run.flood < 0.7 ? 3 : 4;
+    if (alive && band > this.lastFloodBand && band > 0) {
+      const lines = ['舱底已经漫开一层水。', '水过脚踝了。再裂几道缝就来不及夹。', '水漫到小腿。冷气贴着骨头走。', '水快到膝盖。再不补，会淹到驾驶位。'];
+      sayHull(run, lines[band - 1]!);
+      if (band >= 2) this.audio.cue('water.flood', { gain: 0.35 + band * 0.08 });
+    }
+    this.lastFloodBand = band;
+
     this.brownoutLeft -= dt;
     if (alive && run.powered && run.power < 0.15 && this.brownoutLeft <= 0) {
       triggerDropout(0.4 + Math.random() * 0.4);
@@ -263,6 +294,7 @@ export class PodView {
     }
   }
 
+  private containmentAudio=new ContainmentAudio();
   frame(dt: number, run: PodRun): void {
     this.clock += dt;
     const cssW = this.out.clientWidth;
@@ -282,8 +314,9 @@ export class PodView {
     this.audio.setDepth(run.depth);
 
     const alive = run.outcome.kind === 'alive';
+    this.containmentAudio.tick(dt,run,this.audio);
     const near = alive ? run.authoredSite?.nearbyCreature?.() ?? null : null;
-    if (run.flood > 0.35) this.audio.ambience('flooded', 0.4 + run.flood * 0.4);
+    if (run.seams.length > 0 || run.flood > 0.1) this.audio.ambience('flooded', 0.35 + run.flood * 0.45 + run.seams.length * 0.06);
     else if (near) this.audio.ambience('pressure', 0.5 + (1 - near.distance / 14) * 0.4);
     else this.audio.ambience('hull', 0.5 + run.noise * 0.3);
     this.tickPresence(dt, run, near, alive);
@@ -339,7 +372,9 @@ export class PodView {
     this.extras.breathPhase = this.breath.phase;
     this.extras.heartPulse = Math.max(heartPulse, this.shake);
     this.extras.holdBreath = 0;
-    this.extras.fog = clamp01(Math.max(0, this.breath.phase) * 0.035 + run.flood * 0.10);
+    this.lensWet = cabinLensWet(run.flood, run.seams.length);
+    // Final visor fog only: captureSensorFrame/captureKeyframe bypass HUD and this post pass.
+    this.extras.fog = cabinLensFog(this.lensWet, this.breath.phase);
     this.extras.corruption = run.corruption;
     this.extras.hudGain = 1;
     this.extras.emergency = clamp01((run.mode === 'alert' ? 0.7 : 0) + this.shake + run.noise * 0.4);
@@ -380,6 +415,10 @@ export class PodView {
     const h = this.hud.height;
     ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.clearRect(0, 0, w, h);
+
+    if (alive && this.lensWet > 0.02) {
+      drawCabinLensWater(ctx, w, h, this.clock, this.lensWet, this.scene);
+    }
 
     if(run.authoredSite?.diegeticGuidance&&run.outcome.kind==='alive'){
       const caption=run.storyCaptionLeft>0&&run.storyCaption?run.storyCaption:'';

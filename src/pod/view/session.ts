@@ -20,6 +20,8 @@ import { installFootageSink } from './footage';
 import { startPatch, tickPatch } from './seam-patch';
 import { HARBOR_SAVE_KEY, captureHarborSave, readHarborSave, restoreHarborSave, writeHarborSave } from '../sim/harbor-save';
 import { captureLivingSave, livingSlotTaken, readLivingSave, restoreLivingSave, writeLivingSave } from '../sim/living-save';
+import {restoreContainmentSave} from '../sim/containment-save';
+import {containmentSessionOptions,readContainmentSession,freshContainmentSeed,saveContainmentSession} from './containment-session';
 
 const DEATH_TITLE: Record<string, string> = {
   asphyxiation: '氧气用完了',
@@ -34,10 +36,14 @@ const DEATH_TITLE: Record<string, string> = {
 };
 
 export async function startPodSession(resume: boolean): Promise<void> {
+  const containmentOptions=containmentSessionOptions(location.search,resume);
+  let containment:ReturnType<typeof readContainmentSession>=null;
   let saved:ReturnType<typeof readHarborSave>=null;
   let living:ReturnType<typeof readLivingSave>=null;
   try {
-    if(resume){
+    if(containmentOptions.enabled){
+      containment=readContainmentSession(location.search,resume,localStorage);
+    }else if(resume){
       // Continue resumes whichever level checkpoint is newer; a broken one must not hide the other.
       let harborError:unknown=null,livingError:unknown=null;
       try{saved=readHarborSave(localStorage);}catch(error){harborError=error;}
@@ -49,9 +55,10 @@ export async function startPodSession(resume: boolean): Promise<void> {
   catch(error){window.alert(`无法继续：${error instanceof Error?error.message:String(error)}`);return;}
   const override = sessionStorage.getItem('tiejing.seedOverride');
   sessionStorage.removeItem('tiejing.seedOverride');
-  let seed = saved?.seed ?? living?.seed ?? (override ? Number(override) >>> 0 : (Date.now() ^ 0x9e3779b9) >>> 0);
+  let seed = containment?.seed ?? saved?.seed ?? living?.seed ?? (override ? Number(override) >>> 0 : (Date.now() ^ 0x9e3779b9) >>> 0);
   // An explicit new game must never reuse another run's slot, including seed overrides.
-  if(!resume)try{while(localStorage.getItem(`${HARBOR_SAVE_KEY}.${seed}`)!==null||livingSlotTaken(localStorage,seed))seed=(seed+1)>>>0;}catch{/* Save reports unavailable storage in-game. */}
+  if(containmentOptions.enabled&&!containmentOptions.resume){try{seed=freshContainmentSeed(seed,localStorage);}catch{/* Save reports unavailable storage in-game. */}}
+  else if(!containmentOptions.enabled&&!resume)try{while(localStorage.getItem(`${HARBOR_SAVE_KEY}.${seed}`)!==null||livingSlotTaken(localStorage,seed))seed=(seed+1)>>>0;}catch{/* Save reports unavailable storage in-game. */}
 
   const uiRoot = document.getElementById('ui-root') as HTMLDivElement;
   uiRoot.innerHTML = '';
@@ -65,7 +72,16 @@ export async function startPodSession(resume: boolean): Promise<void> {
   const run = new PodRun(seed);
   const view = new PodView(run, outCanvas);
   const startLevel=new URLSearchParams(location.search).get('level');
-  if(!saved&&!living){if(startLevel==='2')run.beginLivingDeck();else run.beginHarborApproach();run.power=1;run.hull=1;run.activeSonarEnabled=true;run.sonarPulseEnabled=startLevel!=='2';}
+  if(!saved&&!living&&!containment){if(containmentOptions.enabled)run.beginContainment();else if(startLevel==='2')run.beginLivingDeck();else run.beginHarborApproach();run.power=1;run.hull=1;run.activeSonarEnabled=true;run.sonarPulseEnabled=startLevel!=='2';}
+  if(containment){
+    try{if(!restoreContainmentSave(run,containment))throw new Error('收容调查记录或场景版本不兼容。');}
+    catch(error){
+      const panel=document.createElement('div');panel.style.cssText='position:fixed;inset:25%;padding:24px;background:#111;color:#eee;z-index:999';
+      panel.textContent=`恢复失败，原存档已保留：${error instanceof Error?error.message:String(error)}`;
+      const back=document.createElement('button');back.textContent='返回标题';back.onclick=()=>location.reload();panel.append(back);uiRoot.append(panel);return;
+    }
+    run.pushLog('收容调查航行记录已恢复。未重新提交视频生成任务。','system');
+  }
   if(living){
     try{if(!restoreLivingSave(run,living))throw new Error('第二关恢复接口未就绪或存档与当前关卡版本不匹配。');}
     catch(error){
@@ -99,7 +115,8 @@ export async function startPodSession(resume: boolean): Promise<void> {
   }
 
   run.pushLog(`三号逃生舱 · 坐标 ${seedToCoords(seed)}`, 'system');
-  run.pushLog('舱外没有窗户。你的眼睛是雷达、全息屏，和那一台摄像头。', 'neutral');
+  if(!run.containment)run.pushLog('舱外没有窗户。你的眼睛是雷达、全息屏，和那一台摄像头。', 'neutral');
+  else if(!containment)run.containmentRadio('万斯：基地事故后，四区收容失效。逐区拍摄登记个体，用分析台原有按钮发送给我；资料齐全后我再给撤离坐标。'+run.containmentBrief);
 
   new PodSession(run, view).start();
 }
@@ -107,8 +124,9 @@ export async function startPodSession(resume: boolean): Promise<void> {
 export class PodSession {
   /** T16: synchronous checkpoint veto, called before the first site's disposal. */
   private saveBeforeDepart=():boolean=>{
-    if(this.run.gmLevelSession||this.run.legIndex!==0)return true;
+    if(this.run.gmLevelSession||(!this.run.containment&&this.run.legIndex!==0))return true;
     try{
+      if(this.run.containment){saveContainmentSession(this.run,localStorage,true);this.saveError='';this.saveAt=0;return true;}
       const save=captureHarborSave(this.run);
       if(!save)throw new Error('当前无法安全保存：请收回机械臂、等待曝光与显影结束，并解除警报后重试。');
       writeHarborSave(localStorage,save);
@@ -129,6 +147,11 @@ export class PodSession {
   private saveError='';
   private saveCheckpoint=():void=>{
     try{
+      if(this.run.containment){
+        if(!saveContainmentSession(this.run,localStorage))return;
+        if(this.saveError)this.run.pushLog('收容调查自动保存已恢复。','system');
+        this.saveError='';return;
+      }
       if(this.run.legIndex===1){
         const save=captureLivingSave(this.run);if(!save)return;
         writeLivingSave(localStorage,save);
@@ -332,8 +355,9 @@ export class PodSession {
       this.stepDistance+=distance;
       if(this.stepDistance>.43) {
         this.stepDistance=0;
-        this.view.audio.cue('step.metal',{gain:.28});
-        this.run.addNoise(.008);
+        const wet=this.run.flood>0.08||this.run.seams.length>0;
+        this.view.audio.cue(wet?'step.water':'step.metal',{gain:wet?.38:.28});
+        this.run.addNoise(wet?.014:.008);
         if(this.run.mode==='calm') this.run.spend(1,.12);
       }
       this.view.hovered=this.centerHit();
@@ -386,6 +410,7 @@ export class PodSession {
     if((this.run.at==='camera'||this.run.at==='nav'||this.run.at==='lab')&&key==='m'){e.preventDefault();if(this.run.at!=='nav')this.run.walkTo('nav');this.openTransmit(false);return;}
     this.keys.add(key);
     // E activates one shared cockpit. Clicking a side screen must not disable F.
+    if(this.run.containment&&this.run.at&&['camera','nav','lab'].includes(this.run.at)&&key==='u'&&!this.tx.open&&!document.querySelector('[role="dialog"],.gm-prompt,#campaign-journal')){e.preventDefault();if(!e.repeat)this.run.toggleContainmentWindow();return;}
     if(this.run.at && ['camera','nav','lab'].includes(this.run.at) && key==='f'){e.preventDefault();this.run.authoredSite?.interact();return;}
     if(this.run.at==='nav'&&key==='4'){e.preventDefault();this.toggleNavDrive();return;}
     if((this.run.at==='camera'||this.run.at==='nav'||this.run.at==='lab') && [' ','n','j','l','i','k','pageup','pagedown','shift'].includes(key)) {

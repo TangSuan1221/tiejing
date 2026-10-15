@@ -126,7 +126,7 @@ export class LivingDeckSite implements AuthoredSite {
  private lastFraming:Framing[]=[];
  readonly presentation={sensorFrame:SENSOR,labLargeFrame:true} as const;
  constructor(private run:PodRun){
-  seep(run);
+  seep(run);run.flood=0;
   const {renderer}=sharedExpeditionRenderer();
   renderer.shadowMap.enabled=true;renderer.shadowMap.type=T.PCFShadowMap;
   this.world=createLivingWorld();

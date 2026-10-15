@@ -1,7 +1,7 @@
 {
   "schemaVersion": 1,
   "id": "ironlung-level-metrics",
-  "revision": "2026-10-11-v73-recovered-password-card-visual-r4-porthole-readouts-instrument-layout-edge-readouts-left-compact-keyboard-tilt-near-focus-warn-lab-desk-tabs-tactical-diagnostics-harbor-blind-pass-causal-narrative-video-policy-branch-prompts-prompt-rag-causal-branches-scout-exposure-snapshot-prompt-structure-v2-sonar-hardware-helm-clearance-keyboard-monitor-alignment-near-water-clarity-refined-focus-range-mandatory-trigger-reference-radio-input-visible-abyssal-horror-minimax-live-verified-species-diversity-20261012-fixed-camera-cargo-video-diagnostics-live-hide-harbor-generated-monsters-only-duration-request-cost-only-abyssal-text-creature-profiles-level03-clinical-design",
+  "revision": "2026-10-15-v75-met044-incremental-original-ui-protected",
   "defaultRuntimeProfile": "main-authored",
   "documents": [
     {
@@ -11,6 +11,21 @@
     }
   ],
   "evidenceFiles": [
+    "docs/containment-incremental-2026-10-15.md",
+    "src/pod/view/containment-session.ts",
+    "src/pod/view/containment-shutter.ts",
+    "src/pod/view/deepsea/containment-adapter.ts",
+    "src/pod/view/deepsea/containment-transit.ts",
+    "tools/containment-incremental-check.mjs",
+    "tools/containment-adapter-check.ts",
+    "docs/containment-implementation-2026-10-15.md",
+    "src/pod/sim/containment-mission.ts",
+    "src/pod/sim/containment-save.ts",
+    "src/pod/view/deepsea/containment-sector.ts",
+    "tools/containment-mission-check.ts",
+    "tools/containment-save-check.ts",
+    "tools/containment-sector-check.ts",
+    "tools/containment-browser-check.mjs",
     "tools/decor-collision-channel-check.ts",
     "src/pod/view/deepsea/expedition-world.ts",
     "docs/level-02-living-deck-design.md",

@@ -15,7 +15,8 @@
 import type { PodRun } from '../sim/run';
 import {isAudioMuted,setAudioMuted} from '../../audio/mute';
 import {createExpedition} from '../content/expedition';
-import {seep,strikeSeep} from '../sim/hull-wear';
+import {HULL_WEAR,seep,strikeSeep} from '../sim/hull-wear';
+import {triggerDropout} from './power-dropout';
 
 const FLAG_KEY = 'ironlung.gm.novideo';
 
@@ -84,12 +85,116 @@ const HELP = [
   '  电量/艇壳/氧气/进水/滤芯 0—100   设置百分比',
   '  补满电量 / 修复艇壳 / 补充氧气 / 排水 / 全面整备',
   '  潜艇状态             查询资源与不断电开关',
-  '  裂缝                 随机撕开一道舱内接缝（全面整备会一并补上）',
+  '  裂缝 [1—6|全开|补上] 撕开接缝；无参数撕一道；补上=全部夹死',
+  '  掉电 [秒]            舱灯与舷窗短暂熄灭（0.3—3，默认1）',
+  '  震动 [0—1]          驾驶座冲击（默认0.55）',
+  '  异常 <预设>          一键套异常状态，便于离座环视舱内效果：',
+  '                       轻度 / 漏水 / 告警 / 严重告警 / 濒危 / 断电 / 掉电 / 复位',
   '  不断电仅本次游戏生效；新游戏默认关闭，不复活已失败任务。',
   '  help                 本表',
   '',
-  '控制台也可以：GM.无视频模式()  /  GM.无视频模式(false)',
+  '控制台也可以：GM.无视频模式()  /  GM.异常(\"漏水\")  /  GM(\"掉电 1.2\")',
 ].join('\n');
+
+function statusLine(run:PodRun):string{
+  const v=run.vitals.vitals;
+  return 'GM · 不断电：'+(run.gmInfinitePower?'开':'关')
+    +' | 电量 '+Math.round(run.power*100)+'%'
+    +' | 艇壳 '+Math.round(run.hull*100)+'%'
+    +' | 氧气 '+Math.round(v.oxygen/v.oxygenMax*100)+'%'
+    +' | 进水 '+Math.round(run.flood*100)+'%'
+    +' | 裂缝 '+run.seams.length+'/'+HULL_WEAR.seams.length
+    +' | 滤芯 '+Math.round(run.scrubber*100)+'%';
+}
+
+function openSeams(run:PodRun,count:number):number{
+  let n=0;
+  while(n<count&&strikeSeep(run)!==null)n++;
+  return n;
+}
+
+function clearSeams(run:PodRun):void{run.seams.length=0;seep(run);}
+
+function restoreHullSystems(run:PodRun):void{
+  run.gmInfinitePower=false;
+  run.power=1;run.blackout=false;run.hull=1;run.flood=0;run.scrubber=1;
+  const v=run.vitals.vitals;run.vitals.restore({oxygen:v.oxygenMax-v.oxygen});
+  clearSeams(run);
+}
+
+/** Presets and one-shot anomaly triggers for cabin VFX / audio QA. */
+function applyAnomaly(run:PodRun,name:string,args:string[]):string{
+  const a=(args[0]??'').toLowerCase();
+  if(name==='掉电'){
+    const sec=a?Number(a):1;
+    if(!Number.isFinite(sec)||sec<0.3||sec>3)return '用法：掉电 [0.3—3]，默认1秒。';
+    if(run.gmInfinitePower)run.gmInfinitePower=false;
+    triggerDropout(sec);run.onCue?.('light.flicker',.6);
+    return `GM · 掉电 ${sec.toFixed(1)} 秒（舱灯与舷窗黑场）。`+'\n'+statusLine(run);
+  }
+  if(name==='震动'){
+    const amount=a?Number(a):.55;
+    if(!Number.isFinite(amount)||amount<0||amount>1)return '用法：震动 [0—1]，默认0.55。';
+    run.onShake?.(amount);run.onCue?.('hull.crack',.35+amount*.4);
+    return `GM · 震动 ${amount.toFixed(2)}。`;
+  }
+  if(name==='裂缝'){
+    if(!a||a==='1'){const slot=strikeSeep(run);return slot===null?'GM · 所有接缝都已裂开。':`GM · 撕开接缝 #${slot}。\n`+statusLine(run);}
+    if(a==='补上'||a==='关'||a==='清'||a==='clear'){clearSeams(run);return 'GM · 已补上全部裂缝。\n'+statusLine(run);}
+    if(a==='全开'||a==='满'||a==='all'){const n=openSeams(run,HULL_WEAR.seams.length);return `GM · 撕开 ${n} 道接缝。\n`+statusLine(run);}
+    const count=Number(a);
+    if(!Number.isInteger(count)||count<1||count>HULL_WEAR.seams.length)return `用法：裂缝 / 裂缝 3 / 裂缝 全开 / 裂缝 补上（最多${HULL_WEAR.seams.length}道）。`;
+    const n=openSeams(run,count);return `GM · 撕开 ${n} 道接缝（目标${count}）。\n`+statusLine(run);
+  }
+  // 异常 <预设>
+  const preset=a||'help';
+  const note=(extra:string)=>`GM · 异常「${preset}」：${extra}\n离座环视舱壁与舱底；补漏对准裂缝按 E。\n`+statusLine(run);
+  if(preset==='help'||preset==='帮助'||preset==='?'){
+    return [
+      '异常预设：',
+      '  轻度     艇壳70% · 1道缝 · 进水12%（喷射与浅积水）',
+      '  漏水     艇壳65% · 3道缝 · 进水35%（积水过踝、湿脚印、水雾）',
+      '  告警     艇壳48% · 2道缝 · 进水20%（艇壳告警音）',
+      '  严重告警 艇壳22% · 4道缝 · 进水45%（加速告警、舷窗裂纹加重）',
+      '  濒危     艇壳18% · 全缝 · 进水62% · 电量12%（掉电边缘+淹水）',
+      '  断电     电量0 · 总闸拉下（全黑，可补满电量恢复）',
+      '  掉电     电量10% · 触发1秒熄灯',
+      '  复位     等同全面整备并关掉不断电',
+    ].join('\n');
+  }
+  if(run.gmInfinitePower&&preset!=='复位')run.gmInfinitePower=false;
+  if(preset==='复位'||preset==='reset'||preset==='清'){restoreHullSystems(run);return 'GM · 异常已复位。\n'+statusLine(run);}
+  if(preset==='轻度'||preset==='light'){
+    clearSeams(run);run.hull=.7;run.flood=.12;run.power=Math.max(run.power,.6);run.blackout=false;openSeams(run,1);
+    run.onCue?.('water.pressure-jet',.5);return note('轻度漏水');
+  }
+  if(preset==='漏水'||preset==='flood'||preset==='进水'){
+    clearSeams(run);run.hull=.65;run.flood=.35;run.power=Math.max(run.power,.5);run.blackout=false;openSeams(run,3);
+    run.onCue?.('water.flood',.45);return note('积水过踝');
+  }
+  if(preset==='告警'||preset==='alarm'){
+    clearSeams(run);run.hull=.48;run.flood=.2;run.power=Math.max(run.power,.55);run.blackout=false;openSeams(run,2);
+    run.onCue?.('alarm.hull',.4);return note('艇壳告警（≤50%）');
+  }
+  if(preset==='严重告警'||preset==='critical-alarm'){
+    clearSeams(run);run.hull=.22;run.flood=.45;run.power=Math.max(run.power,.4);run.blackout=false;openSeams(run,4);
+    run.onCue?.('alarm.hull',.55);return note('严重艇壳告警（≤25%）');
+  }
+  if(preset==='濒危'||preset==='critical'||preset==='濒死'){
+    clearSeams(run);run.hull=.18;run.flood=.62;run.power=.12;run.blackout=false;openSeams(run,HULL_WEAR.seams.length);
+    triggerDropout(.8);run.onCue?.('water.flood',.55);run.onCue?.('power.hum-down',.45);
+    return note('濒危：全缝+深积水+低电掉电');
+  }
+  if(preset==='断电'||preset==='blackout'||preset==='全黑'){
+    run.power=0;run.blackout=true;run.onCue?.('power.breaker',.5);
+    return note('总闸拉下 / 电量归零');
+  }
+  if(preset==='掉电'||preset==='dropout'||preset==='brownout'){
+    run.power=.1;run.blackout=false;triggerDropout(1);run.onCue?.('light.flicker',.65);
+    return note('低电量并触发1秒熄灯（之后仍可能间歇掉电）');
+  }
+  return `未知异常预设「${args[0]??''}」。输入：异常 帮助`;
+}
 
 export function executeGm(raw: string): string {
   const text = raw.trim().replace(/^\/+/, '');
@@ -107,14 +212,20 @@ export function executeGm(raw: string): string {
     const result=isAudioMuted()?'静音：开（音效与台词朗读已关闭，字幕保留）':'静音：关（声音已恢复）';
     echo(result);syncBadge();return result;
   }
-  const resourceNames=['不断电','电量','艇壳','氧气','进水','滤芯','补满电量','修复艇壳','补充氧气','排水','全面整备','潜艇状态','裂缝'];
+  if(name==='裂缝'||name==='掉电'||name==='震动'||name==='异常'){
+    const run=hook?.run();
+    if(!run){const miss='请先开始游戏。';echo(miss);return miss;}
+    if(run.outcome.kind!=='alive'){const miss='当前游戏已结束，请先新游戏或读取检查点。';echo(miss);return miss;}
+    const result=applyAnomaly(run,name,parts.slice(1));
+    run.pushLog(result,'system');echo(result);syncBadge();return result;
+  }
+  const resourceNames=['不断电','电量','艇壳','氧气','进水','滤芯','补满电量','修复艇壳','补充氧气','排水','全面整备','潜艇状态'];
   if(resourceNames.includes(name)){
     const run=hook?.run();let result='请先开始游戏。';
     if(run){
-      const status=()=>{const v=run.vitals.vitals;return 'GM · 不断电：'+(run.gmInfinitePower?'开':'关')+' | 电量 '+Math.round(run.power*100)+'% | 艇壳 '+Math.round(run.hull*100)+'% | 氧气 '+Math.round(v.oxygen/v.oxygenMax*100)+'% | 进水 '+Math.round(run.flood*100)+'% | 裂缝 '+run.seams.length+' | 滤芯 '+Math.round(run.scrubber*100)+'%';};
+      const status=()=>statusLine(run);
       const oxygen=(percent:number)=>{const v=run.vitals.vitals;run.vitals.restore({oxygen:v.oxygenMax*percent/100-v.oxygen});};
       if(name==='潜艇状态')result=status();
-      else if(name==='裂缝'&&run.outcome.kind==='alive')result=strikeSeep(run)===null?'GM · 所有接缝都已裂开。':status();
       else if(run.outcome.kind!=='alive')result='当前游戏已结束，请先新游戏或读取检查点；资源指令不会复活失败任务。';
       else if(name==='不断电'){
         if(arg&&!['开','关','on','off','1','0','true','false'].includes(arg))result='用法：不断电 开 / 不断电 关';
@@ -224,6 +335,10 @@ function ensureGmApi(): void {
       静音: (on?:boolean)=>executeGm('静音'+(on===undefined?'':on?' 开':' 关')),
       不断电: (on?:boolean)=>executeGm('不断电'+(on===undefined?'':on?' 开':' 关')),
       潜艇状态: ()=>executeGm('潜艇状态'),
+      裂缝: (n?:string|number)=>executeGm(n===undefined?'裂缝':`裂缝 ${n}`),
+      掉电: (sec?:number)=>executeGm(sec===undefined?'掉电':`掉电 ${sec}`),
+      震动: (amount?:number)=>executeGm(amount===undefined?'震动':`震动 ${amount}`),
+      异常: (preset?:string)=>executeGm(preset?`异常 ${preset}`:'异常 帮助'),
       怪物入侵: (seconds=120) => executeGm(`怪物入侵 ${seconds}`),
       进入关卡: (level:number) => executeGm(`进入关卡 ${level}`),
       刷怪点: () => executeGm('刷怪点'),
@@ -355,9 +470,10 @@ function ensureConsole(): HTMLElement {
     <div class="gm-actions"><button type="button" data-gm="静音" aria-pressed="false">静音：关</button></div>
     <div class="gm-actions"><button type="button" data-gm="怪物入侵">怪物入侵</button><button type="button" data-gm="无视频模式">切换无视频模式</button><button type="button" data-gm="刷怪点">刷怪点</button><button type="button" data-close>收起</button></div>
     <div class="gm-actions"><button type="button" data-gm="不断电">不断电：关</button><button type="button" data-gm="补满电量">补满电量</button><button type="button" data-gm="修复艇壳">修复艇壳</button><button type="button" data-gm="补充氧气">补充氧气</button><button type="button" data-gm="排水">排水</button><button type="button" data-gm="全面整备">全面整备</button><button type="button" data-gm="潜艇状态">潜艇状态</button><button type="button" data-gm="help">指令帮助</button></div>
+    <div class="gm-actions"><button type="button" data-gm="异常 轻度">轻度漏水</button><button type="button" data-gm="异常 漏水">积水过踝</button><button type="button" data-gm="异常 告警">艇壳告警</button><button type="button" data-gm="异常 严重告警">严重告警</button><button type="button" data-gm="异常 濒危">濒危</button><button type="button" data-gm="异常 断电">断电</button><button type="button" data-gm="异常 掉电">掉电</button><button type="button" data-gm="掉电 1">熄灯1秒</button><button type="button" data-gm="裂缝 全开">裂缝全开</button><button type="button" data-gm="裂缝 补上">补裂缝</button><button type="button" data-gm="震动">震动</button><button type="button" data-gm="异常 复位">异常复位</button></div>
     <div class="gm-levels">${Array.from({length:7},(_,i)=>`<button type="button" data-gm="进入关卡 ${i+1}">第${i+1}关 · ${createExpedition(i).name}</button>`).join('')}</div>
-    <div class="gm-log"><div>选关会重置目标关卡机关，保留艇体资源；测试会话不覆盖正式存档。不会自动请求视频。</div></div>
-    <div class="gm-row"><span>›</span><input type="text" spellcheck="false" autocomplete="off" placeholder="例如：不断电 开 / 电量 80 / help" /></div>
+    <div class="gm-log"><div>选关会重置目标关卡机关，保留艇体资源；测试会话不覆盖正式存档。不会自动请求视频。异常按钮会改艇壳/进水/裂缝，离座环视舱内效果。</div></div>
+    <div class="gm-row"><span>›</span><input type="text" spellcheck="false" autocomplete="off" placeholder="例如：异常 漏水 / 掉电 1.2 / 裂缝 3 / help" /></div>
   `;
   document.body.append(box);
   box.querySelectorAll<HTMLButtonElement>('[data-gm]').forEach(btn=>btn.addEventListener('click',()=>executeGm(btn.dataset.gm!)));

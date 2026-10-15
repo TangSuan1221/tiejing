@@ -23,6 +23,7 @@ import { cameraEye, drawRoomCamera, type RoomCameraInput, type RoomMark } from '
 import { drawDeepseaRoom } from './deepsea';
 import { FOOTAGE_STATE_CN } from '../content/footage-director';
 import type { TapeRecord } from '../sim/run';
+import {drawContainmentShutter} from './containment-shutter';
 
 const TAU = Math.PI * 2;
 // Decode at most one image per reel and do not retain entire old runs.
@@ -57,6 +58,9 @@ export function drawCameraFeed(
   input: CameraFeedInput,
 ): void {
   const { run, time } = input;
+  if(run.containment&&!run.containment.windowOpen&&(input.keyframe||!run.shot.viewing)){
+    drawContainmentShutter(ctx,w,h);return;
+  }
   if(run.phase==='site'&&run.createAuthoredSite&&!run.authoredSite){
     ctx.fillStyle='#071116';ctx.fillRect(0,0,w,h);ctx.fillStyle='#d9bf85';
     ctx.font='20px monospace';ctx.fillText(run.authoredSiteError||'设施场景载入中…',w*.1,h*.5);return;

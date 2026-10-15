@@ -1,0 +1,31 @@
+import assert from 'node:assert/strict';
+import {ContainmentMission,CONTAINMENT_ROUTES,type ContainmentEvidence} from '../src/pod/sim/containment-mission';
+const m=new ContainmentMission();
+assert.equal(CONTAINMENT_ROUTES[1].required.length,9);
+assert.equal(m.setWindow(true),false);assert.equal(m.arrive(),false);
+assert.equal(m.advanceTransit(NaN),false);assert.equal(m.advanceTransit(-1),false);
+assert.equal(m.captureStamp(),null);
+const frames=['data:image/png;base64,AAAA','data:image/png;base64,BBBB','data:image/png;base64,CCCC'];
+for(let i=0;i<4;i++){
+  assert.equal(m.index,i);assert.equal(m.phase,'transit');assert.equal(m.windowOpen,false);
+  m.advanceTransit(m.route.blindDistance);assert(m.arrive());assert.equal(m.windowOpen,false);assert(m.setWindow(true));
+  const stamp=m.captureStamp()!;
+  const e:ContainmentEvidence={...stamp,id:`clip-${i}`,creatureIds:[...m.required],frames,playable:true};
+  assert.equal(m.submit({...e,missionIndex:i-1}).accepted,false);
+  assert.equal(m.submit({...e,epoch:99}).accepted,false);
+  assert.equal(m.submit({...e,playable:false}).accepted,false);
+  assert.equal(m.submit({...e,frames:[]}).accepted,false);
+  assert.equal(m.submit({...e,frames:['blank','blank','blank']}).accepted,false);
+  assert.equal(m.canExit(m.route.exit),false);
+  const before=m.snapshot();assert.equal(m.restore({...before,windowOpen:'yes'}),false);assert.deepEqual(m.snapshot(),before);
+  assert.equal(m.submit(e).accepted,true);assert.equal(m.submit(e).accepted,false);assert.equal(m.phase,'extraction');
+  const saved=m.snapshot(),restored=new ContainmentMission();assert(restored.restore(JSON.parse(JSON.stringify(saved))));assert.deepEqual(restored.snapshot(),saved);
+  assert.equal(m.restore({...saved,submitted:[...saved.submitted,'fake']}),false);
+  assert.equal(m.restore({...saved,evidenceIds:[]}),false);
+  assert.equal(m.canExit([m.route.exit[0],m.route.exit[1]+4.01,m.route.exit[2]]),false);
+  assert.equal(m.canExit([m.route.exit[0],m.route.exit[1]+4,m.route.exit[2]]),true);
+  assert(m.exit(m.route.exit));
+}
+assert.equal(m.phase,'complete');assert.equal(m.windowOpen,false);assert.equal(m.setWindow(true),false);assert.equal(m.arrive(),false);
+const saved=m.snapshot();assert(new ContainmentMission().restore(saved));assert.equal(m.restore({...saved,index:0}),false);
+console.log('PASS four missions; nine authored living targets; closed transit; current playable evidence; duplicate/cross-mission rejection; 3D exit; strict atomic restore. Media decoding remains the outer adapter responsibility.');

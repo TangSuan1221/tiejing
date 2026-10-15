@@ -1,0 +1,22 @@
+{
+  "recordedAt": "2026-10-15",
+  "method": "Read-only PowerShell Get-FileHash after restoration; browser launch denied before execution, no new screenshots",
+  "files": {
+    "src/main.ts": "6ce9ff6cf64a510db0741935cfb457745f0c868cde6afdb2daab1f333ae4ca77",
+    "src/pod/view/lab-desk.ts": "ef71d83909820f30c342c1e937cc7e01654e23ff037c826f1eee58f8224298e9",
+    "src/pod/view/sonar-desk.ts": "b6dd56dab961efc8201075ad4e53ba92231295b26fef33649a760f279c7f77a9",
+    "src/pod/view/cabin-active-controls.ts": "f05ab95c2f0006ace6d65a5fec6ac1dd9b41e95480e5a49ddd2af98b1e6101cf",
+    "src/pod/view/cabin-three.ts": "46b1a9d8f03bbdb0298c580ebfd81b91d47544b28efc9e4d1c302848504f8981",
+    "src/pod/view/cabin-crt-art.ts": "b0a317ecf0740679114a8117611ec7112ff34fa406740bc5a294b1130969d8d9",
+    "src/pod/view/cabin-dressing.ts": "9571b286a80050683ef30cbff4e8d2571311b36b52117250ee65211c60291119",
+    "src/pod/view/cabin-porthole-art.ts": "291e726913401069485be3e5cf0f62927157d56dcd595be4d532d823a967f744",
+    "src/pod/view/cabin-helm.ts": "9e15d3fedfa4d60b7e92e8d72409cb1a1d85d2aa1752ce3236ddb9a249d2c2c9",
+    "src/pod/view/cabin-navigation-keyboard.ts": "588490815ff45575ef9f79e361a1228a652002b9e1db6aeb924c7adbb68061eb",
+    "src/pod/view/cabin-passive-controls.ts": "3227076722e1a8107902705ba96485a8711f912a9c486a5559fad8b5908221e2",
+    "src/pod/view/deepsea/reference-materials.ts": "5521b18cbef06358bb2cb7aefe53ab5718b91a9fdaf98a6637918aa7a11c3fb5",
+    "src/pod/view/deepsea/harbor-materials.ts": "9fb3e55a5a9df1d17ad7f1d4a3535926c082420d26fb1188dfd788386670fdcf",
+    "src/pod/view/deepsea/living-materials.ts": "53aace604f8dd71205967aa52facea39f005c7cab9410eb38188d5b883a42620",
+    "src/pod/view/deepsea/materials.ts": "60fb2163f9b26d7519688595f25a1ad78839915a4d5a1608205cf8b7dc9cd7a1",
+    "src/pod/view/footage.ts": "fee20b4d497283e806073a6f94256b1fb32186484e803d43a721f2a3ea8a853e"
+  }
+}

@@ -14,9 +14,11 @@ import { COORD_AXES } from '../sim/site-coords';
 import { buildNavigationKeyboard } from './cabin-navigation-keyboard';
 import { buildIndustrialHelm } from './cabin-helm';
 import { damageAlarm } from './damage-alarm';
-import { dropoutActive } from './power-dropout';
+import { dropoutVisual } from './power-dropout';
 import { buildPortholeArt, drawPortholeGlass } from './cabin-porthole-art';
 import { CabinSeams } from './cabin-seams';
+import { CabinBilge } from './cabin-bilge';
+import { CabinEmergencyLights } from './cabin-emergency-lights';
 
 /** Arm's length from the eye to a split seam on the wall. */
 const SEAM_REACH=1.1;
@@ -112,11 +114,13 @@ export class CabinThree {
   }
   pose() {return {x:this.eye.x,z:this.eye.z,yaw:this.yaw,pitch:this.pitch,seatEye:this.camera.position.toArray(),helmLook:this.helmLook};}
   private lamp = new THREE.PointLight(0xd6d2b7, 3, 5, 2);
-  private damageLights=[new THREE.PointLight(0xff1308,0,3.8,2),new THREE.PointLight(0xff1308,0,3.8,2)];
-  private damageLens=new THREE.MeshStandardMaterial({color:0x400803,emissive:0xff1608,emissiveIntensity:0,roughness:.3});
-  private normalLights:{light:THREE.Light;intensity:number}[]=[];
+  private normalLights:{light:THREE.Light;intensity:number;color:THREE.Color;floodWeight:number}[]=[];
+  private readonly floodCold=new THREE.Color(0x9ab5b1);
+  private emergency:CabinEmergencyLights;
   private seams:CabinSeams;
-  private flood = new THREE.Mesh(new THREE.PlaneGeometry(2.22,3.94),new THREE.MeshStandardMaterial({color:0x1a3335,metalness:.35,roughness:.19,transparent:true,opacity:.72}));
+  private bilge:CabinBilge;
+  /** Lateral pan of open seams for continuous leak audio (−1..1). */
+  seamPan(){return this.seams.openPan();}
 
   constructor() {
     const r = this.renderer;
@@ -147,17 +151,7 @@ export class CabinThree {
     this.lamp.shadow.mapSize.set(2048, 2048);
     this.lamp.shadow.bias = -0.001;
     this.scene.add(this.lamp);
-    const emergency = new THREE.PointLight(0xff6431, 1.7, 4, 2);
-    emergency.position.set(0.7, 1.72, 1.65);
-    this.scene.add(emergency);
     this.build();
-    this.damageLights.forEach((light,i)=>{
-      light.position.set(i===0?-.72:.72,1.78,i===0?-1.1:.8);
-      this.scene.add(light);
-      const housing=light.position.clone();housing.y+=.09;
-      this.box(this.scene,[.23,.07,.14],housing.toArray(),this.materials.steel,.015);
-      this.box(this.scene,[.16,.055,.10],light.position.toArray(),this.damageLens,.018);
-    });
     this.buildHelm();
     addCabinDressing(this.scene,this.materials);
     for(let i=0;i<7;i++) {
@@ -165,15 +159,16 @@ export class CabinThree {
       this.storyLamps.push(material);
       this.box(this.scene,[.075,.024,.025],[-.30+i*.10,1.74,-1.67],material,.006);
     }
-    this.flood.rotation.x=-Math.PI/2;
-    this.flood.position.set(0,.01,.2);
-    this.flood.visible=false;
-    this.scene.add(this.flood);
+    this.bilge=new CabinBilge(this.scene);
     this.seams=new CabinSeams(this.scene,this.materials.yellow);
     this.scene.traverse(object=>{
-      if(object instanceof THREE.Light && object!==this.lamp && !this.damageLights.includes(object as THREE.PointLight))
-        this.normalLights.push({light:object,intensity:object.intensity});
+      if(object instanceof THREE.Light && object!==this.lamp)
+        this.normalLights.push({
+          light:object,intensity:object.intensity,color:object.color.clone(),
+          floodWeight:object instanceof THREE.HemisphereLight?.34:object.position.z<0?.48:.67,
+        });
     });
+    this.emergency=new CabinEmergencyLights(this.scene,this.materials.steel);
   }
 
   private box(parent: THREE.Object3D, size: number[], at: number[], mat: THREE.Material, radius = 0) {
@@ -342,19 +337,34 @@ export class CabinThree {
     }
     this.camera.rotateZ(-run.pilot.yawRate*.002);
     this.camera.position.y+=Math.sin(view.time*1.4)*Math.min(1,Math.abs(run.pilot.speed))*.004;
-    this.lamp.intensity=run.blackout?.18:2.7+Math.sin(view.time*2)*.06;
+    const dropout=dropoutVisual();
+    const blackout=run.blackout;
+    const drown=run.flood>0.08||run.seams.length?Math.min(1,run.flood*.9+run.seams.length*.08):0;
+    const lampPower=blackout?0:dropout.banks[0];
+    this.lamp.color.set(0xd6d2b7).lerp(this.floodCold,drown*.36);
+    this.lamp.intensity=(2.7+Math.sin(view.time*2)*.06)*lampPower*(1-drown*.43);
     const alarm=damageAlarm(run.hull,view.time);
-    this.damageLights.forEach(light=>{light.intensity=alarm.intensity;});
-    this.damageLens.emissiveIntensity=alarm.level?alarm.intensity*.6:0;
-    this.normalLights.forEach(({light,intensity})=>{light.intensity=intensity*(alarm.level===2?.025:alarm.level===1?.055:1);});
+    this.normalLights.forEach(({light,intensity,color,floodWeight},i)=>{
+      const bank=blackout?0:dropout.banks[(i+1)%2]!;
+      light.color.copy(color).lerp(this.floodCold,drown*(.28+floodWeight*.34));
+      light.intensity=intensity*bank*(1-drown*floodWeight)*(alarm.level===2?.025:alarm.level===1?.055:1);
+    });
     if(alarm.level)this.lamp.intensity*=alarm.level===2?.025:.06;
-    if(dropoutActive()){this.lamp.intensity*=.03;this.normalLights.forEach(({light})=>{light.intensity*=.03;});}
-    this.flood.visible=run.flood>.01;
+    // Flooding cools and attenuates fixtures by mounting position instead of
+    // applying one global dimmer to the entire pressure cell.
+    this.emergency.update(blackout,dropout,alarm,view.time,view.dt);
+    const instrumentFloor=blackout?.075:dropout.instruments;
+    this.screens.forEach(screen=>{
+      const material=screen.mesh.material as THREE.MeshBasicMaterial;
+      if(blackout)material.color.setRGB(instrumentFloor,.018,.012);
+      else material.color.setScalar(instrumentFloor);
+    });
     this.storyLamps.forEach((lamp,i)=>{
       const collected=run.campaign.has(i,'evidence');
-      lamp.emissiveIntensity=collected?.55:i===run.campaign.chapter?.15+.10*Math.sin(view.time*2):0;
+      const normal=collected?.55:i===run.campaign.chapter?.15+.10*Math.sin(view.time*2):0;
+      lamp.emissiveIntensity=normal*(blackout?.12:dropout.instruments);
     });
-    this.flood.position.y=.015+run.flood*.65+Math.sin(view.time*1.7)*run.flood*.006;
+    this.bilge.update(run,view.time);
     this.seams.update(run,view.time,view.dt);
     this.updateNavigationKeyboard?.(run);
     this.updatePassiveControls?.(run);
@@ -453,7 +463,8 @@ export class CabinThree {
     this.camera.rotateZ(a*.045*Math.sin(t*19));
     this.camera.rotateX(a*.028*Math.cos(t*23));
     const normalLight=this.lamp.intensity;
-    if(t<.65)this.lamp.intensity*=.35+.65*Math.abs(Math.sin(t*29));
+    // One damped ballast sag after impact; never a 20 Hz full-cabin flicker.
+    if(t<.65)this.lamp.intensity*=.38+.62*(t/.65)*(t/.65)*(3-2*t/.65);
     this.renderer.render(this.scene,this.camera);
     // Picking must use the exact shaken pose that produced the visible frame.
     this.pickingCamera.copy(this.camera);this.pickingCamera.updateMatrixWorld(true);
@@ -497,7 +508,7 @@ export class CabinThree {
 
   dispose() {
     this.scene.traverse(o=>{if(o instanceof THREE.Mesh){o.geometry.dispose();if(!Array.isArray(o.material))o.material.dispose();}});
-    this.seams.dispose();
+    this.seams.dispose();this.bilge.dispose();this.emergency.dispose();
     this.helmLabels.forEach(t=>t.dispose());
     this.portholeTextures.forEach(t=>t.dispose());
     this.screens.forEach(s=>s.texture.dispose());this.materials.dispose();this.renderer.dispose();
